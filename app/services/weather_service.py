@@ -1,4 +1,8 @@
-import requests
+import httpx
+
+from app.services.cache_service import (
+    weather_cache,
+)
 
 
 WEATHER_URL = (
@@ -19,46 +23,94 @@ def _average(values):
     return sum(valid) / len(valid)
 
 
-def get_weather(
+async def get_weather(
     latitude: float,
     longitude: float,
 ):
-    response = requests.get(
-        WEATHER_URL,
-        params={
-            "latitude": latitude,
-            "longitude": longitude,
-            "current": (
-                "temperature_2m,"
-                "relative_humidity_2m,"
-                "precipitation,"
-                "rain,"
-                "wind_speed_10m"
-            ),
-            "hourly": (
-                "temperature_2m,"
-                "relative_humidity_2m,"
-                "precipitation,"
-                "rain,"
-                "soil_temperature_0cm,"
-                "soil_temperature_6cm,"
-                "soil_moisture_0_to_1cm,"
-                "soil_moisture_1_to_3cm,"
-                "soil_moisture_3_to_9cm"
-            ),
-            "daily": (
-                "precipitation_sum,"
-                "rain_sum"
-            ),
-            "forecast_days": 7,
-            "timezone": "auto",
-        },
-        timeout=20,
+    """
+    Get current weather, forecast and
+    automatic soil/environment data.
+
+    Uses async HTTP and TTL caching.
+    """
+
+    cache_key = (
+        f"weather:"
+        f"{round(latitude, 4)}:"
+        f"{round(longitude, 4)}"
     )
 
-    response.raise_for_status()
+    # -------------------------------------------------
+    # CACHE
+    # -------------------------------------------------
 
-    data = response.json()
+    cached = weather_cache.get(
+        cache_key
+    )
+
+    if cached is not None:
+        return cached
+
+    # -------------------------------------------------
+    # API PARAMETERS
+    # -------------------------------------------------
+
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "current": (
+            "temperature_2m,"
+            "relative_humidity_2m,"
+            "precipitation,"
+            "rain,"
+            "wind_speed_10m"
+        ),
+        "hourly": (
+            "temperature_2m,"
+            "relative_humidity_2m,"
+            "precipitation,"
+            "rain,"
+            "soil_temperature_0cm,"
+            "soil_temperature_6cm,"
+            "soil_moisture_0_to_1cm,"
+            "soil_moisture_1_to_3cm,"
+            "soil_moisture_3_to_9cm"
+        ),
+        "daily": (
+            "precipitation_sum,"
+            "rain_sum"
+        ),
+        "forecast_days": 7,
+        "timezone": "auto",
+    }
+
+    timeout = httpx.Timeout(
+        connect=5.0,
+        read=12.0,
+        write=5.0,
+        pool=5.0,
+    )
+
+    # -------------------------------------------------
+    # ASYNC REQUEST
+    # -------------------------------------------------
+
+    async with httpx.AsyncClient(
+        timeout=timeout
+    ) as client:
+
+        response = await client.get(
+            WEATHER_URL,
+            params=params,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+    # -------------------------------------------------
+    # RESPONSE DATA
+    # -------------------------------------------------
 
     current = data.get(
         "current",
@@ -85,6 +137,10 @@ def get_weather(
         [],
     )
 
+    # -------------------------------------------------
+    # SOIL MOISTURE
+    # -------------------------------------------------
+
     soil_moisture_0_1 = hourly.get(
         "soil_moisture_0_to_1cm",
         [],
@@ -100,6 +156,37 @@ def get_weather(
         [],
     )
 
+    combined_moisture = []
+
+    for values in [
+        soil_moisture_0_1,
+        soil_moisture_1_3,
+        soil_moisture_3_9,
+    ]:
+
+        valid = [
+            float(value)
+            for value in values[:24]
+            if value is not None
+        ]
+
+        if valid:
+            combined_moisture.extend(
+                valid
+            )
+
+    soil_moisture = (
+        _average(
+            combined_moisture
+        )
+        if combined_moisture
+        else None
+    )
+
+    # -------------------------------------------------
+    # SOIL TEMPERATURE
+    # -------------------------------------------------
+
     soil_temperature_0 = hourly.get(
         "soil_temperature_0cm",
         [],
@@ -110,45 +197,22 @@ def get_weather(
         [],
     )
 
-    combined_moisture = []
-
-    for values in [
-        soil_moisture_0_1,
-        soil_moisture_1_3,
-        soil_moisture_3_9,
-    ]:
-        valid = [
-            float(value)
-            for value in values
-            if value is not None
-        ]
-
-        if valid:
-            combined_moisture.extend(
-                valid[:24]
-            )
-
-    soil_moisture = (
-        _average(combined_moisture)
-        if combined_moisture
-        else None
-    )
-
     soil_temperature_values = []
 
     for values in [
         soil_temperature_0,
         soil_temperature_6,
     ]:
+
         valid = [
             float(value)
-            for value in values
+            for value in values[:24]
             if value is not None
         ]
 
         if valid:
             soil_temperature_values.extend(
-                valid[:24]
+                valid
             )
 
     soil_temperature = (
@@ -159,7 +223,11 @@ def get_weather(
         else None
     )
 
-    return {
+    # -------------------------------------------------
+    # FINAL RESULT
+    # -------------------------------------------------
+
+    result = {
         "temperature": current.get(
             "temperature_2m"
         ),
@@ -193,3 +261,14 @@ def get_weather(
             "timezone"
         ),
     }
+
+    # -------------------------------------------------
+    # SAVE TO CACHE
+    # -------------------------------------------------
+
+    weather_cache.set(
+        cache_key,
+        result,
+    )
+
+    return result

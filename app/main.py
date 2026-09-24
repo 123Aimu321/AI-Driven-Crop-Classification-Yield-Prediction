@@ -1,4 +1,7 @@
-import requests
+# app/main.py
+import httpx
+import asyncio
+import time
 
 from fastapi import (
     Depends,
@@ -56,6 +59,10 @@ from app.services.fertilizer_service import (
     recommend_fertilizer,
 )
 
+from app.services.model_service import (
+    model_service,
+)
+
 
 # =================================================
 # APP
@@ -94,7 +101,18 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup_event():
+
     init_db()
+
+    print(
+        "Loading ML models..."
+    )
+
+    model_service.load_models()
+
+    print(
+        "ML models are ready."
+    )
 
 
 # =================================================
@@ -228,13 +246,13 @@ def login(
 # =================================================
 
 @app.get("/location/search")
-def location_search(
+async def location_search(
     place: str,
 ):
 
     try:
 
-        results = search_location(
+        results = await search_location(
             place
         )
 
@@ -243,7 +261,7 @@ def location_search(
             "results": results,
         }
 
-    except requests.RequestException as error:
+    except httpx.HTTPError as error:
 
         raise HTTPException(
             status_code=502,
@@ -269,14 +287,14 @@ def location_search(
 # =================================================
 
 @app.get("/location/coordinates")
-def location_coordinates(
+async def location_coordinates(
     latitude: float,
     longitude: float,
 ):
 
     try:
 
-        location = reverse_geocode(
+        location = await reverse_geocode(
             latitude,
             longitude,
         )
@@ -286,7 +304,7 @@ def location_coordinates(
             "location": location,
         }
 
-    except requests.RequestException as error:
+    except httpx.HTTPError as error:
 
         raise HTTPException(
             status_code=502,
@@ -312,14 +330,14 @@ def location_coordinates(
 # =================================================
 
 @app.get("/soil")
-def soil_information(
+async def soil_information(
     latitude: float,
     longitude: float,
 ):
 
     try:
 
-        result = get_soil_data(
+        result = await get_soil_data(
             latitude,
             longitude,
         )
@@ -329,7 +347,7 @@ def soil_information(
             "soil": result,
         }
 
-    except requests.RequestException as error:
+    except httpx.HTTPError as error:
 
         raise HTTPException(
             status_code=502,
@@ -355,14 +373,14 @@ def soil_information(
 # =================================================
 
 @app.get("/weather")
-def weather_information(
+async def weather_information(
     latitude: float,
     longitude: float,
 ):
 
     try:
 
-        weather = get_weather(
+        weather = await get_weather(
             latitude,
             longitude,
         )
@@ -372,7 +390,7 @@ def weather_information(
             "weather": weather,
         }
 
-    except requests.RequestException as error:
+    except httpx.HTTPError as error:
 
         raise HTTPException(
             status_code=502,
@@ -394,35 +412,65 @@ def weather_information(
 
 
 # =================================================
-# FARM DATA
+# FARM DATA  (fast parallel version)
 # =================================================
 
 @app.get("/farm-data")
-def farm_data(
+async def farm_data(
     latitude: float,
     longitude: float,
 ):
 
     try:
 
-        location = reverse_geocode(
+        start_time = time.perf_counter()
+
+        # -------------------------------------------------
+        # LOCATION
+        # -------------------------------------------------
+
+        location_task = reverse_geocode(
             latitude,
             longitude,
         )
 
-        weather = get_weather(
+        # -------------------------------------------------
+        # WEATHER + RAINFALL RUN IN PARALLEL
+        # -------------------------------------------------
+
+        weather_task = get_weather(
             latitude,
             longitude,
         )
 
-        climate = get_annual_rainfall(
+        climate_task = get_annual_rainfall(
             latitude,
             longitude,
+        )
+
+        location, weather, climate = (
+            await asyncio.gather(
+                location_task,
+                weather_task,
+                climate_task,
+            )
+        )
+
+        elapsed = (
+            time.perf_counter()
+            - start_time
+        )
+
+        print(
+            f"/farm-data completed "
+            f"in {elapsed:.3f}s"
         )
 
         return {
             "success": True,
+
             "location": location,
+
             "weather": {
                 "temperature": weather.get(
                     "temperature"
@@ -430,23 +478,51 @@ def farm_data(
                 "humidity": weather.get(
                     "humidity"
                 ),
+                "precipitation": weather.get(
+                    "precipitation"
+                ),
                 "rain": weather.get(
                     "rain"
                 ),
-                "forecast_24h_rain": weather.get(
-                    "forecast_24h_rain"
+                "wind_speed": weather.get(
+                    "wind_speed"
                 ),
-                "soil_moisture": weather.get(
-                    "soil_moisture"
+                "forecast_24h_precipitation": (
+                    weather.get(
+                        "forecast_24h_precipitation"
+                    )
                 ),
-                "soil_temperature": weather.get(
-                    "soil_temperature"
+                "forecast_24h_rain": (
+                    weather.get(
+                        "forecast_24h_rain"
+                    )
+                ),
+                "soil_moisture": (
+                    weather.get(
+                        "soil_moisture"
+                    )
+                ),
+                "soil_temperature": (
+                    weather.get(
+                        "soil_temperature"
+                    )
+                ),
+                "timezone": weather.get(
+                    "timezone"
                 ),
             },
+
             "climate": climate,
+
+            "performance": {
+                "response_time_seconds": round(
+                    elapsed,
+                    3,
+                )
+            },
         }
 
-    except requests.RequestException as error:
+    except httpx.HTTPError as error:
 
         raise HTTPException(
             status_code=502,
@@ -473,14 +549,14 @@ def farm_data(
 # =================================================
 
 @app.get("/predict/crop")
-def crop_prediction(
+async def crop_prediction(
     latitude: float,
     longitude: float,
 ):
 
     try:
 
-        location = reverse_geocode(
+        location = await reverse_geocode(
             latitude,
             longitude,
         )
@@ -499,14 +575,17 @@ def crop_prediction(
                 ),
             )
 
-        weather = get_weather(
-            latitude,
-            longitude,
-        )
+        weather, climate = await asyncio.gather(
 
-        climate = get_annual_rainfall(
-            latitude,
-            longitude,
+            get_weather(
+                latitude,
+                longitude,
+            ),
+
+            get_annual_rainfall(
+                latitude,
+                longitude,
+            ),
         )
 
         if not climate.get(
@@ -528,7 +607,8 @@ def crop_prediction(
             "annual_rainfall"
         )
 
-        result = predict_crop(
+        result = await asyncio.to_thread(
+            predict_crop,
             state=state,
             annual_rainfall=annual_rainfall,
         )
@@ -566,7 +646,7 @@ def crop_prediction(
     except HTTPException:
         raise
 
-    except requests.RequestException as error:
+    except httpx.HTTPError as error:
 
         raise HTTPException(
             status_code=502,
@@ -600,7 +680,7 @@ def crop_prediction(
 # =================================================
 
 @app.get("/predict/yield")
-def yield_prediction(
+async def yield_prediction(
     latitude: float,
     longitude: float,
     crop: str | None = None,
@@ -608,7 +688,7 @@ def yield_prediction(
 
     try:
 
-        location = reverse_geocode(
+        location = await reverse_geocode(
             latitude,
             longitude,
         )
@@ -627,7 +707,7 @@ def yield_prediction(
                 ),
             )
 
-        climate = get_annual_rainfall(
+        climate = await get_annual_rainfall(
             latitude,
             longitude,
         )
@@ -652,7 +732,8 @@ def yield_prediction(
 
         if not crop:
 
-            crop_result = predict_crop(
+            crop_result = await asyncio.to_thread(
+                predict_crop,
                 state=state,
                 annual_rainfall=annual_rainfall,
             )
@@ -676,7 +757,8 @@ def yield_prediction(
                 "crop"
             )
 
-        result = predict_yield(
+        result = await asyncio.to_thread(
+            predict_yield,
             crop=crop,
             state=state,
             annual_rainfall=annual_rainfall,
@@ -695,7 +777,7 @@ def yield_prediction(
     except HTTPException:
         raise
 
-    except requests.RequestException as error:
+    except httpx.HTTPError as error:
 
         raise HTTPException(
             status_code=502,
@@ -736,7 +818,7 @@ def yield_prediction(
 # =================================================
 
 @app.get("/predict/fertilizer")
-def fertilizer_prediction(
+async def fertilizer_prediction(
     latitude: float,
     longitude: float,
     crop: str | None = None,
@@ -744,7 +826,7 @@ def fertilizer_prediction(
 
     try:
 
-        location = reverse_geocode(
+        location = await reverse_geocode(
             latitude,
             longitude,
         )
@@ -763,7 +845,7 @@ def fertilizer_prediction(
                 ),
             )
 
-        climate = get_annual_rainfall(
+        climate = await get_annual_rainfall(
             latitude,
             longitude,
         )
@@ -783,7 +865,8 @@ def fertilizer_prediction(
                     ),
                 }
 
-            crop_result = predict_crop(
+            crop_result = await asyncio.to_thread(
+                predict_crop,
                 state=state,
                 annual_rainfall=climate.get(
                     "annual_rainfall"
@@ -808,7 +891,8 @@ def fertilizer_prediction(
                 "crop"
             )
 
-        result = recommend_fertilizer(
+        result = await asyncio.to_thread(
+            recommend_fertilizer,
             crop=crop,
             state=state,
         )
@@ -826,7 +910,7 @@ def fertilizer_prediction(
     except HTTPException:
         raise
 
-    except requests.RequestException as error:
+    except httpx.HTTPError as error:
 
         raise HTTPException(
             status_code=502,
@@ -868,7 +952,7 @@ def fertilizer_prediction(
 # =================================================
 
 @app.post("/history")
-def save_prediction_history(
+async def save_prediction_history(
     user_id: int,
     latitude: float,
     longitude: float,
@@ -880,19 +964,22 @@ def save_prediction_history(
 
     try:
 
-        location = reverse_geocode(
-            latitude,
-            longitude,
-        )
+        location, weather, climate = await asyncio.gather(
 
-        weather = get_weather(
-            latitude,
-            longitude,
-        )
+            reverse_geocode(
+                latitude,
+                longitude,
+            ),
 
-        climate = get_annual_rainfall(
-            latitude,
-            longitude,
+            get_weather(
+                latitude,
+                longitude,
+            ),
+
+            get_annual_rainfall(
+                latitude,
+                longitude,
+            ),
         )
 
         crop = predicted_crop
@@ -902,7 +989,8 @@ def save_prediction_history(
 
         if crop:
 
-            crop_result = predict_crop(
+            crop_result = await asyncio.to_thread(
+                predict_crop,
                 state=location.get(
                     "state"
                 ),
@@ -1090,7 +1178,7 @@ def save_prediction_history(
             "history_id": history_id,
         }
 
-    except requests.RequestException as error:
+    except httpx.HTTPError as error:
 
         db.rollback()
 

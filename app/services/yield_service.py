@@ -1,21 +1,7 @@
-import os
-
-import joblib
 import pandas as pd
 
-
-BASE_DIR = os.path.dirname(
-    os.path.dirname(
-        os.path.dirname(
-            os.path.abspath(__file__)
-        )
-    )
-)
-
-MODEL_PATH = os.path.join(
-    BASE_DIR,
-    "models",
-    "yield_model.joblib",
+from app.services.model_service import (
+    model_service,
 )
 
 
@@ -27,27 +13,30 @@ ALLOWED_CROPS = {
 
 
 def load_model():
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(
-            "Yield model not found. "
-            "Run training/train_yield_model.py first."
-        )
 
-    return joblib.load(MODEL_PATH)
+    return model_service.get_yield_model()
 
 
 def _get_season():
-    """
-    Automatically determine agricultural season
-    from the current month.
-    """
 
     month = pd.Timestamp.now().month
 
-    if month in [6, 7, 8, 9, 10]:
+    if month in [
+        6,
+        7,
+        8,
+        9,
+        10,
+    ]:
         return "Kharif"
 
-    if month in [11, 12, 1, 2, 3]:
+    if month in [
+        11,
+        12,
+        1,
+        2,
+        3,
+    ]:
         return "Rabi"
 
     return "Summer"
@@ -58,16 +47,6 @@ def predict_yield(
     state,
     annual_rainfall,
 ):
-    """
-    Predict crop yield automatically.
-
-    Inputs:
-    - Predicted crop
-    - Automatically detected state
-    - Automatically obtained annual rainfall
-    - Automatically determined year
-    - Automatically determined season
-    """
 
     crop = (
         str(crop)
@@ -100,24 +79,25 @@ def predict_yield(
             ),
         }
 
+    # Already loaded into memory.
     model = load_model()
 
-    current_year = pd.Timestamp.now().year
+    current_year = (
+        pd.Timestamp.now().year
+    )
 
     season = _get_season()
 
     input_data = pd.DataFrame(
-        [
-            {
-                "Crop": crop,
-                "Crop_Year": current_year,
-                "Season": season,
-                "State": str(state).strip(),
-                "Annual_Rainfall": float(
-                    annual_rainfall
-                ),
-            }
-        ]
+        [{
+            "Crop": crop,
+            "Crop_Year": current_year,
+            "Season": season,
+            "State": str(state).strip(),
+            "Annual_Rainfall": float(
+                annual_rainfall
+            ),
+        }]
     )
 
     prediction = model.predict(

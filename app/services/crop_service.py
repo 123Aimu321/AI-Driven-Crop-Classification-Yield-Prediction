@@ -3,6 +3,10 @@ import os
 import joblib
 import pandas as pd
 
+from app.services.model_service import (
+    model_service,
+)
+
 
 BASE_DIR = os.path.dirname(
     os.path.dirname(
@@ -11,6 +15,7 @@ BASE_DIR = os.path.dirname(
         )
     )
 )
+
 
 MODEL_PATH = os.path.join(
     BASE_DIR,
@@ -27,27 +32,30 @@ ALLOWED_CROPS = {
 
 
 def load_model():
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(
-            "Crop model not found. "
-            "Run training/train_crop_model.py first."
-        )
 
-    return joblib.load(MODEL_PATH)
+    return model_service.get_crop_model()
 
 
 def _get_season():
-    """
-    Automatically determine season
-    from the current month.
-    """
 
     month = pd.Timestamp.now().month
 
-    if month in [6, 7, 8, 9, 10]:
+    if month in [
+        6,
+        7,
+        8,
+        9,
+        10,
+    ]:
         return "Kharif"
 
-    if month in [11, 12, 1, 2, 3]:
+    if month in [
+        11,
+        12,
+        1,
+        2,
+        3,
+    ]:
         return "Rabi"
 
     return "Summer"
@@ -57,12 +65,18 @@ def _get_crop_probabilities(
     model,
     input_data,
 ):
-    if not hasattr(model, "predict_proba"):
+
+    if not hasattr(
+        model,
+        "predict_proba",
+    ):
         return {}
 
-    probabilities = model.predict_proba(
-        input_data
-    )[0]
+    probabilities = (
+        model.predict_proba(
+            input_data
+        )[0]
+    )
 
     classes = model.classes_
 
@@ -72,6 +86,7 @@ def _get_crop_probabilities(
         classes,
         probabilities,
     ):
+
         crop_name = (
             str(crop)
             .strip()
@@ -79,6 +94,7 @@ def _get_crop_probabilities(
         )
 
         if crop_name in ALLOWED_CROPS:
+
             result[crop_name] = round(
                 float(probability) * 100,
                 2,
@@ -91,15 +107,6 @@ def predict_crop(
     state,
     annual_rainfall,
 ):
-    """
-    Predict one of the supported crops:
-
-    - Wheat
-    - Rice
-    - Ragi
-
-    Inputs are obtained automatically.
-    """
 
     if not state:
         return {
@@ -119,23 +126,25 @@ def predict_crop(
             ),
         }
 
+    # IMPORTANT:
+    # Model is already loaded in memory.
     model = load_model()
 
-    current_year = pd.Timestamp.now().year
+    current_year = (
+        pd.Timestamp.now().year
+    )
 
     season = _get_season()
 
     input_data = pd.DataFrame(
-        [
-            {
-                "Crop_Year": current_year,
-                "Season": season,
-                "State": str(state).strip(),
-                "Annual_Rainfall": float(
-                    annual_rainfall
-                ),
-            }
-        ]
+        [{
+            "Crop_Year": current_year,
+            "Season": season,
+            "State": str(state).strip(),
+            "Annual_Rainfall": float(
+                annual_rainfall
+            ),
+        }]
     )
 
     prediction = model.predict(
@@ -149,6 +158,7 @@ def predict_crop(
     )
 
     if crop not in ALLOWED_CROPS:
+
         return {
             "success": False,
             "message": (
@@ -163,9 +173,11 @@ def predict_crop(
             ],
         }
 
-    probabilities = _get_crop_probabilities(
-        model,
-        input_data,
+    probabilities = (
+        _get_crop_probabilities(
+            model,
+            input_data,
+        )
     )
 
     return {

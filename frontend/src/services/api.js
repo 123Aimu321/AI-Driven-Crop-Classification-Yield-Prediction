@@ -1,3 +1,4 @@
+// frontend/src/services/api.js
 import axios from "axios";
 
 const API_BASE_URL =
@@ -5,10 +6,24 @@ const API_BASE_URL =
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 45000,
+
+  // Fast failure instead of waiting 45 seconds.
+  timeout: 15000,
+
+  headers: {
+    "Content-Type": "application/json",
+  },
 });
 
 export default api;
+
+/* =====================================================
+   REQUEST CANCELLATION
+===================================================== */
+
+export function createCancelToken() {
+  return new AbortController();
+}
 
 /* =====================================================
    GENERAL HELPERS
@@ -74,6 +89,26 @@ export function getErrorMessage(
   error,
   fallback = "Something went wrong."
 ) {
+  // Cancelled requests are not real errors.
+  if (
+    axios.isCancel?.(error) ||
+    error?.name === "CanceledError" ||
+    error?.code === "ERR_CANCELED"
+  ) {
+    return "Request cancelled.";
+  }
+
+  // Timeouts deserve a friendly message.
+  if (
+    error?.code === "ECONNABORTED" ||
+    /timeout/i.test(error?.message || "")
+  ) {
+    return (
+      "The request timed out. " +
+      "The backend took too long to respond."
+    );
+  }
+
   const data =
     error?.response?.data;
 
@@ -357,12 +392,38 @@ export function normalizeFarmData(
         )
       ),
 
+    precipitation:
+      toNumber(
+        firstDefined(
+          data?.precipitation,
+          weather?.precipitation,
+          weather?.precipitation_sum
+        )
+      ),
+
+    wind_speed:
+      toNumber(
+        firstDefined(
+          data?.wind_speed,
+          weather?.wind_speed,
+          weather?.windSpeed
+        )
+      ),
+
     forecast_24h_rain:
       toNumber(
         firstDefined(
           data?.forecast_24h_rain,
           weather?.forecast_24h_rain,
           weather?.rain_24h
+        )
+      ),
+
+    forecast_24h_precipitation:
+      toNumber(
+        firstDefined(
+          data?.forecast_24h_precipitation,
+          weather?.forecast_24h_precipitation
         )
       ),
 
@@ -386,6 +447,14 @@ export function normalizeFarmData(
         )
       ),
 
+    timezone: toText(
+      firstDefined(
+        data?.timezone,
+        weather?.timezone
+      ),
+      ""
+    ),
+
     annual_rainfall:
       toNumber(
         firstDefined(
@@ -404,6 +473,10 @@ export function normalizeFarmData(
         data?.year
       ),
 
+    // New block exposed by the fast /farm-data endpoint.
+    performance:
+      data?.performance || null,
+
     location,
 
     raw: data,
@@ -412,7 +485,8 @@ export function normalizeFarmData(
 
 export async function getFarmData(
   latitude,
-  longitude
+  longitude,
+  signal
 ) {
   const response =
     await api.get(
@@ -422,6 +496,7 @@ export async function getFarmData(
           latitude,
           longitude,
         },
+        signal,
       }
     );
 
@@ -519,7 +594,8 @@ export function normalizeCropResult(
 export async function getCropPrediction(
   latitude,
   longitude,
-  crop
+  crop,
+  signal
 ) {
   const params = {
     latitude,
@@ -536,6 +612,7 @@ export async function getCropPrediction(
       "/predict/crop",
       {
         params,
+        signal,
       }
     );
 
@@ -638,7 +715,8 @@ export function normalizeYieldResult(
 export async function getYieldPrediction(
   latitude,
   longitude,
-  crop
+  crop,
+  signal
 ) {
   const response =
     await api.get(
@@ -649,6 +727,7 @@ export async function getYieldPrediction(
           longitude,
           crop: String(crop),
         },
+        signal,
       }
     );
 
@@ -762,7 +841,8 @@ export function normalizeFertilizerResult(
 export async function getFertilizerRecommendation(
   latitude,
   longitude,
-  crop
+  crop,
+  signal
 ) {
   const response =
     await api.get(
@@ -773,6 +853,7 @@ export async function getFertilizerRecommendation(
           longitude,
           crop: String(crop),
         },
+        signal,
       }
     );
 

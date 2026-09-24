@@ -1,4 +1,8 @@
-import requests
+import httpx
+
+from app.services.cache_service import (
+    location_cache,
+)
 
 
 GEOCODING_URL = (
@@ -18,69 +22,172 @@ HEADERS = {
 }
 
 
-def search_location(place: str):
+async def search_location(
+    place: str,
+):
+    """
+    Search location using Open-Meteo.
+
+    Results are cached for one hour.
+    """
 
     place = place.strip()
 
     if not place:
         return []
 
-    response = requests.get(
-        GEOCODING_URL,
-        params={
-            "name": place,
-            "count": 5,
-            "language": "en",
-            "format": "json",
-        },
-        timeout=20,
+    cache_key = (
+        f"location:"
+        f"{place.lower()}"
     )
 
-    response.raise_for_status()
+    # -------------------------------------------------
+    # CACHE
+    # -------------------------------------------------
 
-    data = response.json()
+    cached = location_cache.get(
+        cache_key
+    )
+
+    if cached is not None:
+        return cached
+
+    # -------------------------------------------------
+    # REQUEST
+    # -------------------------------------------------
+
+    timeout = httpx.Timeout(
+        connect=5.0,
+        read=10.0,
+        write=5.0,
+        pool=5.0,
+    )
+
+    async with httpx.AsyncClient(
+        timeout=timeout
+    ) as client:
+
+        response = await client.get(
+            GEOCODING_URL,
+            params={
+                "name": place,
+                "count": 5,
+                "language": "en",
+                "format": "json",
+            },
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+    # -------------------------------------------------
+    # NORMALIZE RESULTS
+    # -------------------------------------------------
 
     results = []
 
-    for item in data.get("results", []):
+    for item in data.get(
+        "results",
+        [],
+    ):
 
         results.append(
             {
-                "name": item.get("name"),
-                "state": item.get("admin1"),
-                "country": item.get("country"),
+                "name": item.get(
+                    "name"
+                ),
+                "state": item.get(
+                    "admin1"
+                ),
+                "country": item.get(
+                    "country"
+                ),
                 "country_code": item.get(
                     "country_code"
                 ),
-                "latitude": item.get("latitude"),
-                "longitude": item.get("longitude"),
+                "latitude": item.get(
+                    "latitude"
+                ),
+                "longitude": item.get(
+                    "longitude"
+                ),
             }
         )
+
+    # -------------------------------------------------
+    # CACHE
+    # -------------------------------------------------
+
+    location_cache.set(
+        cache_key,
+        results,
+    )
 
     return results
 
 
-def reverse_geocode(
+async def reverse_geocode(
     latitude: float,
     longitude: float,
 ):
+    """
+    Reverse geocode coordinates.
 
-    response = requests.get(
-        REVERSE_URL,
-        params={
-            "lat": latitude,
-            "lon": longitude,
-            "format": "jsonv2",
-            "zoom": 10,
-            "addressdetails": 1,
-        },
-        headers=HEADERS,
-        timeout=20,
+    Results are cached for one hour.
+    """
+
+    cache_key = (
+        f"reverse:"
+        f"{round(latitude, 4)}:"
+        f"{round(longitude, 4)}"
     )
 
-    response.raise_for_status()
+    # -------------------------------------------------
+    # CACHE
+    # -------------------------------------------------
 
-    data = response.json()
+    cached = location_cache.get(
+        cache_key
+    )
+
+    if cached is not None:
+        return cached
+
+    # -------------------------------------------------
+    # REQUEST
+    # -------------------------------------------------
+
+    timeout = httpx.Timeout(
+        connect=5.0,
+        read=10.0,
+        write=5.0,
+        pool=5.0,
+    )
+
+    async with httpx.AsyncClient(
+        timeout=timeout
+    ) as client:
+
+        response = await client.get(
+            REVERSE_URL,
+            params={
+                "lat": latitude,
+                "lon": longitude,
+                "format": "jsonv2",
+                "zoom": 10,
+                "addressdetails": 1,
+            },
+            headers=HEADERS,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+    # -------------------------------------------------
+    # ADDRESS
+    # -------------------------------------------------
 
     address = data.get(
         "address",
@@ -96,7 +203,7 @@ def reverse_geocode(
         or "Unknown"
     )
 
-    return {
+    result = {
         "name": city,
         "state": address.get(
             "state"
@@ -113,3 +220,14 @@ def reverse_geocode(
             "display_name"
         ),
     }
+
+    # -------------------------------------------------
+    # CACHE
+    # -------------------------------------------------
+
+    location_cache.set(
+        cache_key,
+        result,
+    )
+
+    return result
